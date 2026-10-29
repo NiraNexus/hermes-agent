@@ -66,6 +66,7 @@ class Gateway:
         self.resume_errors = []  # raised by the next session.resume calls, across lives
         self.dialing = threading.Event()
         self.hold = None  # an Event the next dials wait on before the socket opens
+        self.teardown = None  # an Event a closing socket waits on before its loop ends (close_timeout)
 
     @asynccontextmanager
     async def dial(self):
@@ -78,7 +79,11 @@ class Gateway:
         life = Life(len(self.lives) + 1, drop_on_submit=self.drop_next_submit, resume_errors=self.resume_errors)
         self.drop_next_submit = False
         self.lives.append(life)
-        yield life
+        try:
+            yield life
+        finally:
+            if self.teardown is not None:
+                await asyncio.to_thread(self.teardown.wait, 5)
 
     def hang_up(self, conn):
         """The current life goes away (``gateway restart``); the loop thread ends with it."""
@@ -113,6 +118,20 @@ def test_the_next_call_after_a_restart_reconnects_and_resubscribes(gateway, conn
     assert conn.state(SID).subscription_id == "sub-2"
     lost = conn.events.get_nowait()
     assert isinstance(lost, GatewayClientError) and lost_before(lost, conn.epoch)
+
+
+def test_a_call_while_the_hung_up_socket_closes_reaches_the_next_gateway(gateway, conn):
+    """The reader ended (the hang-up already failed the pending requests with AnswerLost), but the loop
+    is still closing that socket: a request asked again now waits that out and reaches the next
+    gateway, instead of being written to the dying socket."""
+    gateway.teardown = threading.Event()
+    life = gateway.lives[-1]
+    life.reader = types.SimpleNamespace(done=lambda: True)  # the hang-up ended it
+    conn.loop.call_soon_threadsafe(life.events.put_nowait, GatewayClientError("Gateway disconnected"))
+    threading.Timer(0.3, gateway.teardown.set).start()
+
+    assert conn.call("status") == {"status": "ok", "life": 2}
+    assert ("status", {}) not in life.calls
 
 
 def test_close_ends_the_viewer_for_good(gateway, conn):

@@ -157,6 +157,15 @@ class SessionState:
             listener(self.usage)
 
 
+def _hung_up(client):
+    """The socket can carry no new request: its reader ended (a hang-up fails the pending requests
+    with :class:`AnswerLost`), or it is closing (a keepalive timeout fails it before the reader ends)."""
+    from websockets.protocol import State
+    reader, websocket = getattr(client, "reader", None), getattr(client, "websocket", None)
+    return (reader is not None and reader.done()) or (
+        websocket is not None and getattr(websocket, "state", State.OPEN) is not State.OPEN)
+
+
 class GatewayConnection:
     _shared = None
     _shared_lock = threading.Lock()
@@ -421,6 +430,13 @@ class GatewayConnection:
         if self._thread is not None and threading.current_thread() is self._thread:
             raise RuntimeError("GatewayConnection.call() on the gateway loop thread would deadlock")
         self.start()
+        live, thread = self._live, self._thread
+        if live is not None and thread is not None and _hung_up(live[0]):
+            # Hung up, but the loop is still closing that socket (up to its close_timeout): wait that
+            # out and dial again, so a request asked again after a lost answer reaches the next socket
+            # instead of failing on the dying one.
+            thread.join(budget)
+            self.start()
         live, loop = self._live, self.loop
         if live is None or loop is None:
             raise GatewayClientError(NOT_SENT)
