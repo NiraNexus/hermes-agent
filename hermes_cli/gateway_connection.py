@@ -272,10 +272,10 @@ class GatewayConnection:
                 if self.epoch:
                     try:
                         await self._resubscribe(client)
-                    except GatewayClientError as exc:
-                        # The redial's own resume failed (refused, or its answer lost): the call that
-                        # triggered the redial sent nothing, so it must not read as that request's
-                        # refusal or lost answer (a caller would release or re-ask its request id).
+                    except AnswerLost as exc:
+                        # The redial's own resume lost its answer: the call that triggered the redial
+                        # sent nothing, so it must not read as that request's lost answer. A refusal
+                        # passes as is: the resume's own verdict, which the caller reports.
                         raise GatewayClientError(NOT_SENT) from exc
                 self.epoch += 1
                 self.client = client

@@ -13,7 +13,7 @@ import pytest
 
 from hermes_cli.cli_chat_error_copy import chat_error_response
 from hermes_cli.gateway_agent import GatewayAgent
-from hermes_cli.gateway_client import AnswerLost, GatewayClientError, GatewayRPCError
+from hermes_cli.gateway_client import AnswerLost, GatewayClientError
 from hermes_cli.gateway_connection import NOT_SENT, GatewayConnection, lost_before
 
 SID = "local-abc"
@@ -263,16 +263,6 @@ def test_a_resubscribe_answer_lost_during_a_redial_is_not_the_callers_lost_answe
     assert not isinstance(raised.value, AnswerLost) and str(raised.value) == NOT_SENT
     assert isinstance(raised.value.__cause__, AnswerLost)
     assert conn.call("status") == {"status": "ok", "life": 3}
-
-
-def test_a_resubscribe_refusal_during_a_redial_is_not_the_callers_refusal(gateway, conn):
-    """A draining owner refuses the redial's own ``session.resume``: the triggering call was never
-    sent, so it must not read as that request's refusal."""
-    gateway.resume_errors.append(GatewayRPCError("runtime_draining"))
-    gateway.hang_up(conn)
-    with pytest.raises(GatewayClientError) as raised:
-        conn.call("status")
-    assert not isinstance(raised.value, GatewayRPCError) and str(raised.value) == NOT_SENT
 
 
 def test_close_after_a_failed_resume_is_still_final(gateway, conn):
