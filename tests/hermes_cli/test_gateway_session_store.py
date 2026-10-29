@@ -575,6 +575,19 @@ def test_a_storage_failure_of_a_fresh_create_holds_its_id(store):
     assert first == second
 
 
+def test_resuming_a_session_settles_a_held_create(store):
+    """Lost creates, then the user resumes a session: a later /new is a new session, never the one the
+    lost asks made (which may be the very session resumed)."""
+    db, client = store
+    _failing_creates(client, TimeoutError(), TimeoutError())
+    with pytest.raises(AnswerLost):
+        db.create({})
+    db.attach("local-old")
+    db.create({})
+    ids = [params["request_id"] for params in _creates(client)]
+    assert ids[0] == ids[1] != ids[2]
+
+
 @pytest.mark.parametrize("failure", [GatewayRPCError("request_failed"), GatewayRPCError("invalid_params")],
                          ids=["internal_error", "refused"])
 def test_a_failed_fresh_create_holds_its_id(store, failure):

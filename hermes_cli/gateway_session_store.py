@@ -124,6 +124,9 @@ class GatewaySessionStore:
         return self.connection.call(method, **params)
 
     def _adopt(self, snapshot):
+        # Any session this viewer takes up (created, resumed, branched) settles a held create: a later
+        # /new must not land on the session a lost ask made, which may be the one now in use.
+        self._unanswered_create = None
         sid = snapshot["stored_session_id"]
         self.snapshots[sid] = snapshot
         self.current = snapshot
@@ -192,7 +195,6 @@ class GatewaySessionStore:
                 # Holding an id the owner never used costs nothing: the next ask creates under it.
                 self._unanswered_create = (params, request_id)
             raise
-        self._unanswered_create = None
         warning = (snapshot.get("info") or {}).get("config_warning")
         if warning:
             print(f"Warning: {warning}", file=sys.stderr)
