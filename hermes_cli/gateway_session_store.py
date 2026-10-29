@@ -178,14 +178,15 @@ class GatewaySessionStore:
             params["title"] = title
         params.update(self.client_env())
         held = self._unanswered_create
-        request_id = held[1] if held and held[0] == params else uuid.uuid4().hex
+        reused = bool(held) and held[0] == params
+        request_id = held[1] if reused else uuid.uuid4().hex
         try:
             snapshot = _create_session(self.call, params, request_id)
         except BaseException as exc:
-            if _owner_may_hold(exc):
+            # Only an answer settles a held id: a later refusal (a draining owner refuses before it
+            # looks the session up), a send that never left or an interrupt says nothing about it.
+            if not reused and _owner_may_hold(exc):
                 self._unanswered_create = (params, request_id)
-            elif isinstance(exc, GatewayClientError):  # refused, or never sent: nothing under this id
-                self._unanswered_create = None
             raise
         self._unanswered_create = None
         warning = (snapshot.get("info") or {}).get("config_warning")

@@ -501,16 +501,31 @@ def test_a_refused_retry_after_a_lost_ask_keeps_the_request_id(store):
     assert first == second == third
 
 
-def test_a_refusal_of_a_fresh_ask_releases_the_held_request_id(store):
+@pytest.mark.parametrize("later", [GatewayRPCError("runtime_draining"), GatewayClientError(NOT_SENT)],
+                         ids=["refused", "never_sent"])
+def test_only_an_answer_settles_a_held_request_id(store, later):
+    """Held after two lost answers: a later ask under it that is refused or never sent says nothing
+    about the first session, so the id stays held until an ask under it is answered."""
     db, client = store
-    _failing_creates(client, TimeoutError(), TimeoutError(), GatewayRPCError("invalid_params"))
+    _failing_creates(client, TimeoutError(), TimeoutError(), later)
     with pytest.raises(AnswerLost):
         db.create({})
-    with pytest.raises(GatewayRPCError):  # asked under the held id, answered with a refusal
+    with pytest.raises(GatewayClientError):
+        db.create({})
+    db.create({})  # answered: the session the lost asks may have created
+    db.create({})  # a new create after that is a new session
+    ids = [params["request_id"] for params in _creates(client)]
+    assert ids[0] == ids[1] == ids[2] == ids[3] != ids[4]
+
+
+def test_a_refused_fresh_create_holds_nothing(store):
+    db, client = store
+    _failing_creates(client, GatewayRPCError("invalid_params"))
+    with pytest.raises(GatewayRPCError):
         db.create({})
     db.create({})
-    ids = [params["request_id"] for params in _creates(client)]
-    assert ids[0] == ids[1] == ids[2] != ids[3]
+    first, second = (params["request_id"] for params in _creates(client))
+    assert first != second
 
 
 def test_an_interrupt_during_the_retry_keeps_the_request_id(store):
