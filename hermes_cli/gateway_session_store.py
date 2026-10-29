@@ -22,7 +22,7 @@ import re
 import sys
 import uuid
 
-from hermes_cli.gateway_client import AnswerLost, GatewayClientError, GatewayRPCError
+from hermes_cli.gateway_client import AnswerLost, GatewayClientError
 from hermes_cli.gateway_connection import RESUME_REFUSALS, GatewayConnection
 
 logger = logging.getLogger(__name__)
@@ -181,11 +181,11 @@ class GatewaySessionStore:
         request_id = held[1] if held and held[0] == params else uuid.uuid4().hex
         try:
             snapshot = _create_session(self.call, params, request_id)
-        except AnswerLost:
-            self._unanswered_create = (params, request_id)
-            raise
-        except GatewayClientError:  # refused, or never sent: the owner holds nothing under this id
-            self._unanswered_create = None
+        except BaseException as exc:
+            if _owner_may_hold(exc):
+                self._unanswered_create = (params, request_id)
+            elif isinstance(exc, GatewayClientError):  # refused, or never sent: nothing under this id
+                self._unanswered_create = None
             raise
         self._unanswered_create = None
         warning = (snapshot.get("info") or {}).get("config_warning")
@@ -566,21 +566,21 @@ def _create_session(call, params, request_id):
     (:class:`AnswerLost`). The owner derives the session id from the request id
     (``hermes_state_keys.local_identity``, applied by ``gateway.session_local.stage_local_session``),
     so a repeat resolves to the same session whether the first build has committed or is still in
-    flight. A fresh id would build a second agent and orphan the first session. A refusal, or a
-    request that never left, raises as is."""
+    flight. A fresh id would build a second agent and orphan the first session. Any failure raises as
+    is; the retry runs inside the handler, so its failure carries the lost first ask as context
+    (:func:`_owner_may_hold`)."""
     try:
         return call("session.create", request_id=request_id, **params)
     except AnswerLost as exc:
         logger.info("session.create answer lost (%s); asking again under the same request_id", exc)
-    try:
         return call("session.create", request_id=request_id, **params)
-    except GatewayRPCError:
-        raise
-    except AnswerLost:
-        raise
-    except GatewayClientError as exc:
-        # The retry never reached the owner (a failed redial), but the first ask may have: still lost.
-        raise AnswerLost(str(exc)) from exc
+
+
+def _owner_may_hold(exc):
+    """Whether the owner may hold a session under the request id a failed create used: an ask's
+    answer was lost, possibly the first one before a retry that was refused (a draining owner refuses
+    before it looks the session up), never sent, or interrupted."""
+    return isinstance(exc, AnswerLost) or isinstance(exc.__context__, AnswerLost)
 
 
 def session_store():

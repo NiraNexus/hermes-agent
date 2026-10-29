@@ -270,7 +270,13 @@ class GatewayConnection:
         try:
             async with connect() as client:
                 if self.epoch:
-                    await self._resubscribe(client)
+                    try:
+                        await self._resubscribe(client)
+                    except GatewayClientError as exc:
+                        # The redial's own resume failed (refused, or its answer lost): the call that
+                        # triggered the redial sent nothing, so it must not read as that request's
+                        # refusal or lost answer (a caller would release or re-ask its request id).
+                        raise GatewayClientError(NOT_SENT) from exc
                 self.epoch += 1
                 self.client = client
                 self._live = (client, self.epoch)
@@ -282,10 +288,6 @@ class GatewayConnection:
                 stop.cancel()
         except Exception as exc:  # health: allow BLE001 -- a transport failure becomes the connect error or the disconnect frame
             if not self._ready.is_set():
-                if isinstance(exc, AnswerLost):  # a resubscribe's lost answer: no caller's request was sent
-                    not_sent = GatewayClientError(NOT_SENT)
-                    not_sent.__cause__ = exc
-                    exc = not_sent
                 self._error = exc if isinstance(exc, GatewayClientError) else GatewayClientError(
                     f"Gateway connection failed; no local fallback ({type(exc).__name__})")
             else:

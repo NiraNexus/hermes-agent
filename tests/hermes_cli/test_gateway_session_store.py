@@ -481,21 +481,47 @@ def test_a_lost_answer_whose_retry_never_left_still_holds_the_request_id(store, 
     create must still ask under the same id."""
     db, client = store
     _failing_creates(client, TimeoutError(), retry_failure)
-    with pytest.raises(AnswerLost):
+    with pytest.raises(GatewayClientError) as raised:
         db.create({})
+    assert raised.value is retry_failure  # the user sees what actually failed
     assert db.create({}) == "local-new"
     first, second, third = (params["request_id"] for params in _creates(client))
     assert first == second == third
 
 
-def test_a_refused_retry_releases_the_held_request_id(store):
+def test_a_refused_retry_after_a_lost_ask_keeps_the_request_id(store):
+    """A draining owner refuses the retry before it looks the session up, though the first ask may
+    have committed it: the next create still asks under that id."""
     db, client = store
-    _failing_creates(client, TimeoutError(), GatewayRPCError("invalid_params"))
+    _failing_creates(client, TimeoutError(), GatewayRPCError("runtime_draining"))
     with pytest.raises(GatewayRPCError):
         db.create({})
     db.create({})
     first, second, third = (params["request_id"] for params in _creates(client))
-    assert first == second != third
+    assert first == second == third
+
+
+def test_a_refusal_of_a_fresh_ask_releases_the_held_request_id(store):
+    db, client = store
+    _failing_creates(client, TimeoutError(), TimeoutError(), GatewayRPCError("invalid_params"))
+    with pytest.raises(AnswerLost):
+        db.create({})
+    with pytest.raises(GatewayRPCError):  # asked under the held id, answered with a refusal
+        db.create({})
+    db.create({})
+    ids = [params["request_id"] for params in _creates(client)]
+    assert ids[0] == ids[1] == ids[2] != ids[3]
+
+
+def test_an_interrupt_during_the_retry_keeps_the_request_id(store):
+    """Ctrl+C while the retry waits: the first ask may still have created the session."""
+    db, client = store
+    _failing_creates(client, TimeoutError(), KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        db.create({})
+    db.create({})
+    first, second, third = (params["request_id"] for params in _creates(client))
+    assert first == second == third
 
 
 def test_create_if_missing_asks_a_lost_answer_again_under_the_same_request_id(store, monkeypatch):
