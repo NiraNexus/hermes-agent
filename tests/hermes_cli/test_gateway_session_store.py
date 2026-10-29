@@ -528,6 +528,17 @@ def test_a_refused_fresh_create_holds_nothing(store):
     assert first != second
 
 
+def test_an_interrupt_during_the_first_ask_keeps_the_request_id(store):
+    """Ctrl+C while the first ask waits: it is not retried, but the owner may still be building."""
+    db, client = store
+    _failing_creates(client, KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        db.create({})
+    db.create({})
+    first, second = (params["request_id"] for params in _creates(client))
+    assert first == second
+
+
 def test_an_interrupt_during_the_retry_keeps_the_request_id(store):
     """Ctrl+C while the retry waits: the first ask may still have created the session."""
     db, client = store

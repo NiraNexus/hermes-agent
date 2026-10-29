@@ -580,8 +580,10 @@ def _create_session(call, params, request_id):
 def _owner_may_hold(exc):
     """Whether the owner may hold a session under the request id a failed create used: an ask's
     answer was lost, possibly the first one before a retry that was refused (a draining owner refuses
-    before it looks the session up), never sent, or interrupted."""
-    return isinstance(exc, AnswerLost) or isinstance(exc.__context__, AnswerLost)
+    before it looks the session up), never sent, or interrupted; or the ask itself ended in something
+    other than a classified gateway error (Ctrl+C, a raw transport error), so its fate is unknown."""
+    return (isinstance(exc, AnswerLost) or isinstance(exc.__context__, AnswerLost)
+            or not isinstance(exc, GatewayClientError))
 
 
 def session_store():
