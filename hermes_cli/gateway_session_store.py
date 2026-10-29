@@ -22,7 +22,7 @@ import re
 import sys
 import uuid
 
-from hermes_cli.gateway_client import AnswerLost, GatewayClientError
+from hermes_cli.gateway_client import AnswerLost, GatewayClientError, GatewayRPCError
 from hermes_cli.gateway_connection import RESUME_REFUSALS, GatewayConnection
 
 logger = logging.getLogger(__name__)
@@ -183,9 +183,14 @@ class GatewaySessionStore:
         try:
             snapshot = _create_session(self.call, params, request_id)
         except BaseException as exc:
-            # Only an answer settles a held id: a later refusal (a draining owner refuses before it
-            # looks the session up), a send that never left or an interrupt says nothing about it.
-            if not reused and _owner_may_hold(exc):
+            if isinstance(exc, GatewayRPCError) and str(exc) not in _OWNER_BUSY:
+                # The owner's verdict on this request (its re-resolved request differs, a rotated
+                # launch key): every ask under the id would be refused again.
+                if reused:
+                    self._unanswered_create = None
+            elif not reused and _owner_may_hold(exc):
+                # A busy owner refuses before it looks the session up, and a send that never left
+                # or an interrupt says nothing about it: only an answer settles a held id.
                 self._unanswered_create = (params, request_id)
             raise
         self._unanswered_create = None
@@ -575,6 +580,11 @@ def _create_session(call, params, request_id):
     except AnswerLost as exc:
         logger.info("session.create answer lost (%s); asking again under the same request_id", exc)
         return call("session.create", request_id=request_id, **params)
+
+
+# Refusals a draining or restarting owner gives before it looks the session up (the transient
+# reasons kanban_worker_client also waits out, plus a store outage): they say nothing about it.
+_OWNER_BUSY = frozenset({"runtime_draining", "runtime_retired", "storage_unavailable"})
 
 
 def _owner_may_hold(exc):

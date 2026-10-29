@@ -518,6 +518,30 @@ def test_only_an_answer_settles_a_held_request_id(store, later):
     assert ids[0] == ids[1] == ids[2] == ids[3] != ids[4]
 
 
+def test_the_owners_verdict_on_a_held_request_releases_its_id(store):
+    """A refusal about the request itself (its re-resolved request differs, a rotated key) would
+    answer every ask under the held id the same way: the next create mints a new one."""
+    db, client = store
+    _failing_creates(client, TimeoutError(), TimeoutError(), GatewayRPCError("invalid_params"))
+    with pytest.raises(AnswerLost):
+        db.create({})
+    with pytest.raises(GatewayRPCError):
+        db.create({})
+    db.create({})
+    ids = [params["request_id"] for params in _creates(client)]
+    assert ids[0] == ids[1] == ids[2] != ids[3]
+
+
+def test_a_verdict_on_the_retry_after_a_lost_ask_holds_nothing(store):
+    db, client = store
+    _failing_creates(client, TimeoutError(), GatewayRPCError("admission_conflict"))
+    with pytest.raises(GatewayRPCError):
+        db.create({})
+    db.create({})
+    first, second, third = (params["request_id"] for params in _creates(client))
+    assert first == second != third
+
+
 def test_a_refused_fresh_create_holds_nothing(store):
     db, client = store
     _failing_creates(client, GatewayRPCError("invalid_params"))
