@@ -518,11 +518,16 @@ def test_only_an_answer_settles_a_held_request_id(store, later):
     assert ids[0] == ids[1] == ids[2] == ids[3] != ids[4]
 
 
-def test_the_owners_verdict_on_a_held_request_releases_its_id(store):
-    """A refusal about the request itself (its re-resolved request differs, a rotated key) would
-    answer every ask under the held id the same way: the next create mints a new one."""
+_ID_MISMATCH = GatewayRPCError("invalid_params", data={"field": "request_id"})
+
+
+@pytest.mark.parametrize("verdict", [_ID_MISMATCH, GatewayRPCError("admission_conflict")],
+                         ids=["another_request", "another_key"])
+def test_the_owners_verdict_on_a_held_request_id_releases_it(store, verdict):
+    """The owner looked the id up and refused it (another frozen request, another launch key):
+    every ask under it would be refused the same way, so the next create mints a new one."""
     db, client = store
-    _failing_creates(client, TimeoutError(), TimeoutError(), GatewayRPCError("invalid_params"))
+    _failing_creates(client, TimeoutError(), TimeoutError(), verdict)
     with pytest.raises(AnswerLost):
         db.create({})
     with pytest.raises(GatewayRPCError):
@@ -532,14 +537,41 @@ def test_the_owners_verdict_on_a_held_request_releases_its_id(store):
     assert ids[0] == ids[1] == ids[2] != ids[3]
 
 
+def test_a_refusal_before_the_lookup_keeps_a_held_request_id(store):
+    """``invalid_params`` for a cwd that is gone for now is refused before the owner looks the id up:
+    once the folder is back, the next create still lands on the session the lost asks made."""
+    db, client = store
+    _failing_creates(client, TimeoutError(), TimeoutError(),
+                     GatewayRPCError("invalid_params", data={"field": "cwd"}))
+    with pytest.raises(AnswerLost):
+        db.create({})
+    with pytest.raises(GatewayRPCError):
+        db.create({})
+    db.create({})
+    ids = [params["request_id"] for params in _creates(client)]
+    assert ids[0] == ids[1] == ids[2] == ids[3]
+
+
 def test_a_verdict_on_the_retry_after_a_lost_ask_holds_nothing(store):
     db, client = store
-    _failing_creates(client, TimeoutError(), GatewayRPCError("admission_conflict"))
+    _failing_creates(client, TimeoutError(), _ID_MISMATCH)
     with pytest.raises(GatewayRPCError):
         db.create({})
     db.create({})
     first, second, third = (params["request_id"] for params in _creates(client))
     assert first == second != third
+
+
+def test_a_storage_failure_of_a_fresh_create_holds_its_id(store):
+    """``storage_unavailable`` can follow the commit (the snapshot after it failed): not retried at
+    once, but the next create asks under the same id."""
+    db, client = store
+    _failing_creates(client, GatewayRPCError("storage_unavailable"))
+    with pytest.raises(GatewayRPCError):
+        db.create({})
+    db.create({})
+    first, second = (params["request_id"] for params in _creates(client))
+    assert first == second
 
 
 def test_a_refused_fresh_create_holds_nothing(store):

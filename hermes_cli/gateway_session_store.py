@@ -183,14 +183,12 @@ class GatewaySessionStore:
         try:
             snapshot = _create_session(self.call, params, request_id)
         except BaseException as exc:
-            if isinstance(exc, GatewayRPCError) and str(exc) not in _OWNER_BUSY:
-                # The owner's verdict on this request (its re-resolved request differs, a rotated
-                # launch key): every ask under the id would be refused again.
-                if reused:
+            if _verdict_on_the_id(exc):
+                if reused:  # every later ask under it would be refused the same way
                     self._unanswered_create = None
             elif not reused and _owner_may_hold(exc):
-                # A busy owner refuses before it looks the session up, and a send that never left
-                # or an interrupt says nothing about it: only an answer settles a held id.
+                # Anything else (a refusal before the lookup, a send that never left, an interrupt)
+                # says nothing about the session a lost ask may have created: only an answer settles it.
                 self._unanswered_create = (params, request_id)
             raise
         self._unanswered_create = None
@@ -582,18 +580,24 @@ def _create_session(call, params, request_id):
         return call("session.create", request_id=request_id, **params)
 
 
-# Refusals a draining or restarting owner gives before it looks the session up (the transient
-# reasons kanban_worker_client also waits out, plus a store outage): they say nothing about it.
-_OWNER_BUSY = frozenset({"runtime_draining", "runtime_retired", "storage_unavailable"})
+def _verdict_on_the_id(exc):
+    """The owner looked the request id up and refused it: the session under it carries another
+    frozen request (``invalid_params`` naming ``request_id``) or another launch key
+    (``admission_conflict``), in ``gateway.session_local.stage_local_session``. A refusal from before
+    that lookup (``invalid_params`` for an unavailable ``cwd``, ``runtime_draining``) is not one."""
+    return isinstance(exc, GatewayRPCError) and (
+        str(exc) == "admission_conflict"
+        or (str(exc) == "invalid_params" and exc.data.get("field") == "request_id"))
 
 
 def _owner_may_hold(exc):
     """Whether the owner may hold a session under the request id a failed create used: an ask's
-    answer was lost, possibly the first one before a retry that was refused (a draining owner refuses
-    before it looks the session up), never sent, or interrupted; or the ask itself ended in something
-    other than a classified gateway error (Ctrl+C, a raw transport error), so its fate is unknown."""
+    answer was lost, possibly the first one before a retry that failed; the ask ended in something
+    other than a classified gateway error (Ctrl+C, a raw transport error); or the owner failed it with
+    ``storage_unavailable``, which can follow the commit (``gateway/session_controls.py``)."""
     return (isinstance(exc, AnswerLost) or isinstance(exc.__context__, AnswerLost)
-            or not isinstance(exc, GatewayClientError))
+            or not isinstance(exc, GatewayClientError)
+            or (isinstance(exc, GatewayRPCError) and str(exc) == "storage_unavailable"))
 
 
 def session_store():
