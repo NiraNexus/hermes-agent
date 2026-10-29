@@ -224,6 +224,16 @@ class GatewayConnection:
     # -- lifecycle ---------------------------------------------------------------------------
     def start(self, timeout=90):
         deadline = time.monotonic() + timeout
+        live, thread = self._live, self._thread
+        if (live is not None and thread is not None and thread is not threading.current_thread()
+                and _hung_up(live[0])):
+            # Hung up, but the loop is still closing that socket (up to its close_timeout): wait that
+            # out, then dial again below, so every caller (a submit's preflight, a detach, a create
+            # asked again after a lost answer) reads and writes the next gateway's state, never the
+            # dying socket's.
+            thread.join(max(deadline - time.monotonic(), 0))
+            if thread.is_alive():
+                raise GatewayClientError("Gateway connection timed out; no local fallback")
         while True:
             with self._start_lock:
                 if self.final:
@@ -430,15 +440,8 @@ class GatewayConnection:
         if self._thread is not None and threading.current_thread() is self._thread:
             raise RuntimeError("GatewayConnection.call() on the gateway loop thread would deadlock")
         self.start()
-        live, thread = self._live, self._thread
-        if live is not None and thread is not None and _hung_up(live[0]):
-            # Hung up, but the loop is still closing that socket (up to its close_timeout): wait that
-            # out and dial again, so a request asked again after a lost answer reaches the next socket
-            # instead of failing on the dying one.
-            thread.join(budget)
-            self.start()
         live, loop = self._live, self.loop
-        if live is None or loop is None:
+        if live is None or loop is None or _hung_up(live[0]):  # hung up again since start() returned
             raise GatewayClientError(NOT_SENT)
         client, epoch = live
         return asyncio.run_coroutine_threadsafe(client.rpc(method, _timeout=budget, **params), loop), epoch

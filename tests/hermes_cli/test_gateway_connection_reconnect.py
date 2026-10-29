@@ -120,18 +120,36 @@ def test_the_next_call_after_a_restart_reconnects_and_resubscribes(gateway, conn
     assert isinstance(lost, GatewayClientError) and lost_before(lost, conn.epoch)
 
 
-def test_a_call_while_the_hung_up_socket_closes_reaches_the_next_gateway(gateway, conn):
+def _hang_up_with_the_close_held(gateway, conn):
     """The reader ended (the hang-up already failed the pending requests with AnswerLost), but the loop
-    is still closing that socket: a request asked again now waits that out and reaches the next
-    gateway, instead of being written to the dying socket."""
+    is still closing that socket: ``gateway.teardown`` holds the close open."""
     gateway.teardown = threading.Event()
     life = gateway.lives[-1]
-    life.reader = types.SimpleNamespace(done=lambda: True)  # the hang-up ended it
+    life.reader = types.SimpleNamespace(done=lambda: True)
     conn.loop.call_soon_threadsafe(life.events.put_nowait, GatewayClientError("Gateway disconnected"))
+    return life
+
+
+def test_start_while_the_hung_up_socket_closes_resubscribes_on_the_next_gateway(gateway, conn):
+    """Callers that read the connection's state after ``start()`` (a submit's preflight, a detach) see
+    the next gateway's, resubscribed, never the dying socket's; a call reaches the next gateway too."""
+    life = _hang_up_with_the_close_held(gateway, conn)
     threading.Timer(0.3, gateway.teardown.set).start()
 
+    conn.start(5)
+    assert conn.client is gateway.lives[1] and conn.state(SID).subscription_id == "sub-2"
     assert conn.call("status") == {"status": "ok", "life": 2}
     assert ("status", {}) not in life.calls
+
+
+def test_a_close_that_outlasts_start_sends_nothing(gateway, conn):
+    life = _hang_up_with_the_close_held(gateway, conn)
+    try:
+        with pytest.raises(GatewayClientError, match="timed out"):
+            conn.start(0.3)
+        assert life.calls == [("session.resume", {"session_id": SID})] and len(gateway.lives) == 1
+    finally:
+        gateway.teardown.set()
 
 
 def test_close_ends_the_viewer_for_good(gateway, conn):
