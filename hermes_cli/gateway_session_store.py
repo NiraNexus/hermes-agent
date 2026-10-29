@@ -23,7 +23,7 @@ import sys
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_connection import RESUME_REFUSALS, GatewayConnection
+from hermes_cli.gateway_connection import DISCONNECTED, RESUME_REFUSALS, GatewayConnection
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +174,7 @@ class GatewaySessionStore:
         if title:
             params["title"] = title
         params.update(self.client_env())
-        snapshot = self.call("session.create", request_id=uuid.uuid4().hex, **params)
+        snapshot = _create_session(self.call, params)
         warning = (snapshot.get("info") or {}).get("config_warning")
         if warning:
             print(f"Warning: {warning}", file=sys.stderr)
@@ -548,6 +548,22 @@ def move_cli_workspace(cli, wt_info):
     os.environ["TERMINAL_CWD"] = cwd
 
 
+def _create_session(call, params):
+    """``session.create`` with one ``request_id`` for every ask. The owner derives the session id
+    from it (``gateway.session_local.local_identity``) and answers a repeat with the session it
+    already built or is still building, so an answer lost after the send (the deadline passed, or
+    the socket dropped) is asked once more under the same id. Asking under a fresh id would build a
+    second agent and orphan the first session. A refusal, or a request that never left, raises as is."""
+    request_id = uuid.uuid4().hex
+    try:
+        return call("session.create", request_id=request_id, **params)
+    except GatewayClientError as exc:
+        if str(exc) != DISCONNECTED and not isinstance(exc.__cause__, TimeoutError):
+            raise
+        logger.info("session.create answer lost (%s); asking again under the same request_id", exc)
+    return call("session.create", request_id=request_id, **params)
+
+
 def session_store():
     return GatewaySessionStore()
 
@@ -565,7 +581,7 @@ def create_titled_session(title):
     try:
         store = session_store()
         params.update(store.client_env())
-        snapshot = store.call("session.create", request_id=uuid.uuid4().hex, title=title, **params)
+        snapshot = _create_session(store.call, {**params, "title": title})
     except GatewayClientError as exc:
         logger.warning("Failed to create titled session %r on the gateway: %s", title, exc)
         return None

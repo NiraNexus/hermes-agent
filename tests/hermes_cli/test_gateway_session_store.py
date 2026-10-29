@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
-from hermes_cli.gateway_connection import GatewayConnection
+from hermes_cli.gateway_connection import DISCONNECTED, NOT_SENT, GatewayConnection
 from hermes_cli.gateway_session_store import GatewaySessionStore
 
 INFO = {"model": "fake-model", "cwd": "/w", "context_length": 128000, "enabled_toolsets": ["file"],
@@ -418,6 +418,73 @@ def test_create_if_missing_titles_a_gateway_created_session(store, monkeypatch):
     assert gss.create_titled_session("Fresh Named") == "local-new"
     _method, params = [c for c in client.calls if c[0] == "session.create"][-1]
     assert params["title"] == "Fresh Named" and params["source"] and params["cwd"]
+
+
+class _LosesFirstCreate(FakeClient):
+    """The first ``session.create`` answer is lost: ``lost`` is what the transport raised."""
+
+    def __init__(self, lost):
+        super().__init__()
+        self.lost = lost
+
+    async def rpc(self, method, *, _timeout=None, **params):
+        if method == "session.create" and self.lost is not None:
+            self.calls.append((method, params))
+            lost, self.lost = self.lost, None
+            raise lost
+        return await super().rpc(method, _timeout=_timeout, **params)
+
+
+def _store_on(client):
+    @asynccontextmanager
+    async def connect():
+        yield client
+    conn = GatewayConnection(connect=connect)
+    conn.start(5)
+    return GatewaySessionStore(conn), conn
+
+
+@pytest.mark.parametrize("lost", [TimeoutError(), GatewayClientError(DISCONNECTED)], ids=["deadline", "hang_up"])
+def test_a_lost_create_answer_is_asked_again_under_the_same_request_id(lost):
+    """The owner keys a local session by its ``request_id`` and answers a repeat with the session it
+    built. A fresh id on the retry builds a second agent and orphans the first session (#146359)."""
+    client = _LosesFirstCreate(lost)
+    db, conn = _store_on(client)
+    try:
+        assert db.create({}) == "local-new"
+        asks = [params for method, params in client.calls if method == "session.create"]
+        assert len(asks) == 2 and asks[0]["request_id"] == asks[1]["request_id"]
+        assert asks[0] == asks[1]  # the same frozen request, or the owner refuses the retry
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("refusal", [GatewayRPCError("invalid_params"), GatewayClientError(NOT_SENT)],
+                         ids=["owner_refused", "never_sent"])
+def test_a_refused_or_unsent_create_is_not_asked_again(refusal):
+    """A refusal is the owner's answer, and a request that never left has nothing to recover."""
+    client = _LosesFirstCreate(refusal)
+    db, conn = _store_on(client)
+    try:
+        with pytest.raises(GatewayClientError) as raised:
+            db.create({})
+        assert raised.value is refusal
+        assert [method for method, _ in client.calls].count("session.create") == 1
+    finally:
+        conn.close()
+
+
+def test_create_if_missing_asks_a_lost_answer_again_under_the_same_request_id(monkeypatch):
+    client = _LosesFirstCreate(TimeoutError())
+    db, conn = _store_on(client)
+    from hermes_cli import gateway_session_store as gss
+    monkeypatch.setattr(gss, "session_store", lambda: db)
+    try:
+        assert gss.create_titled_session("Fresh Named") == "local-new"
+        asks = [params for method, params in client.calls if method == "session.create"]
+        assert len(asks) == 2 and asks[0] == asks[1] and asks[0]["title"] == "Fresh Named"
+    finally:
+        conn.close()
 
 
 def test_bare_continue_finds_the_last_session_the_cli_created(tmp_path, monkeypatch):
