@@ -14,7 +14,7 @@ import pytest
 from hermes_cli.cli_chat_error_copy import chat_error_response
 from hermes_cli.gateway_agent import GatewayAgent
 from hermes_cli.gateway_client import AnswerLost, GatewayClientError
-from hermes_cli.gateway_connection import GatewayConnection, lost_before
+from hermes_cli.gateway_connection import NOT_SENT, GatewayConnection, lost_before
 
 SID = "local-abc"
 
@@ -260,7 +260,7 @@ def test_a_resubscribe_answer_lost_during_a_redial_is_not_the_callers_lost_answe
     gateway.hang_up(conn)
     with pytest.raises(GatewayClientError) as raised:
         conn.call("status")
-    assert not isinstance(raised.value, AnswerLost)
+    assert not isinstance(raised.value, AnswerLost) and str(raised.value) == NOT_SENT
     assert conn.call("status") == {"status": "ok", "life": 3}
 
 

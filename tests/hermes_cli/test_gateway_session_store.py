@@ -468,8 +468,34 @@ def test_the_next_create_after_two_lost_answers_reuses_their_request_id(store):
         db.create({})
     assert db.create({}) == "local-new"
     db.create({"model": "other"})
+    db.create({})  # answered above: a new create of the same request is a new session
     ids = [params["request_id"] for params in _creates(client)]
-    assert ids[0] == ids[1] == ids[2] != ids[3]
+    assert ids[0] == ids[1] == ids[2] != ids[3] and ids[4] not in ids[:4]
+
+
+@pytest.mark.parametrize("retry_failure", [GatewayClientError(NOT_SENT),
+                                           GatewayClientError("Gateway connection failed; no local fallback")],
+                         ids=["never_sent", "dial_failed"])
+def test_a_lost_answer_whose_retry_never_left_still_holds_the_request_id(store, retry_failure):
+    """The first ask may have created the session even though the retry's redial failed: the next
+    create must still ask under the same id."""
+    db, client = store
+    _failing_creates(client, TimeoutError(), retry_failure)
+    with pytest.raises(AnswerLost):
+        db.create({})
+    assert db.create({}) == "local-new"
+    first, second, third = (params["request_id"] for params in _creates(client))
+    assert first == second == third
+
+
+def test_a_refused_retry_releases_the_held_request_id(store):
+    db, client = store
+    _failing_creates(client, TimeoutError(), GatewayRPCError("invalid_params"))
+    with pytest.raises(GatewayRPCError):
+        db.create({})
+    db.create({})
+    first, second, third = (params["request_id"] for params in _creates(client))
+    assert first == second != third
 
 
 def test_create_if_missing_asks_a_lost_answer_again_under_the_same_request_id(store, monkeypatch):

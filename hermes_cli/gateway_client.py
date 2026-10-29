@@ -50,8 +50,9 @@ class GatewayClientError(ValueError):
 
 
 class AnswerLost(GatewayClientError):
-    """The request may have reached the owner, but its answer never came back: the deadline passed,
-    or the socket dropped after the send. A retry must reuse the request's own identity."""
+    """The request may have reached the owner, but its answer never came back: the deadline passed
+    (``GatewayConnection.call``) or the socket dropped after the send (this client's reader). A
+    retry must reuse the request's own identity."""
 
 
 class GatewayRPCError(GatewayClientError):

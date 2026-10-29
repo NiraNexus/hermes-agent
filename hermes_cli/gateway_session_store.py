@@ -22,7 +22,7 @@ import re
 import sys
 import uuid
 
-from hermes_cli.gateway_client import AnswerLost, GatewayClientError
+from hermes_cli.gateway_client import AnswerLost, GatewayClientError, GatewayRPCError
 from hermes_cli.gateway_connection import RESUME_REFUSALS, GatewayConnection
 
 logger = logging.getLogger(__name__)
@@ -179,12 +179,15 @@ class GatewaySessionStore:
         params.update(self.client_env())
         held = self._unanswered_create
         request_id = held[1] if held and held[0] == params else uuid.uuid4().hex
-        self._unanswered_create = None
         try:
             snapshot = _create_session(self.call, params, request_id)
         except AnswerLost:
             self._unanswered_create = (params, request_id)
             raise
+        except GatewayClientError:  # refused, or never sent: the owner holds nothing under this id
+            self._unanswered_create = None
+            raise
+        self._unanswered_create = None
         warning = (snapshot.get("info") or {}).get("config_warning")
         if warning:
             print(f"Warning: {warning}", file=sys.stderr)
@@ -569,7 +572,15 @@ def _create_session(call, params, request_id):
         return call("session.create", request_id=request_id, **params)
     except AnswerLost as exc:
         logger.info("session.create answer lost (%s); asking again under the same request_id", exc)
-    return call("session.create", request_id=request_id, **params)
+    try:
+        return call("session.create", request_id=request_id, **params)
+    except GatewayRPCError:
+        raise
+    except AnswerLost:
+        raise
+    except GatewayClientError as exc:
+        # The retry never reached the owner (a failed redial), but the first ask may have: still lost.
+        raise AnswerLost(str(exc)) from exc
 
 
 def session_store():

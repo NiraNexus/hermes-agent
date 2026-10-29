@@ -283,7 +283,9 @@ class GatewayConnection:
         except Exception as exc:  # health: allow BLE001 -- a transport failure becomes the connect error or the disconnect frame
             if not self._ready.is_set():
                 if isinstance(exc, AnswerLost):  # a resubscribe's lost answer: no caller's request was sent
-                    exc = GatewayClientError(str(exc))
+                    not_sent = GatewayClientError(NOT_SENT)
+                    not_sent.__cause__ = exc
+                    exc = not_sent
                 self._error = exc if isinstance(exc, GatewayClientError) else GatewayClientError(
                     f"Gateway connection failed; no local fallback ({type(exc).__name__})")
             else:
