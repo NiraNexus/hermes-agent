@@ -186,9 +186,10 @@ class GatewaySessionStore:
             if _verdict_on_the_id(exc):
                 if reused:  # every later ask under it would be refused the same way
                     self._unanswered_create = None
-            elif not reused and _owner_may_hold(exc):
-                # Anything else (a refusal before the lookup, a send that never left, an interrupt)
-                # says nothing about the session a lost ask may have created: only an answer settles it.
+            else:
+                # Any other failure may follow the owner's commit (a lost answer, Ctrl+C, a failure
+                # after it: storage_unavailable, request_failed), and says nothing about a held id.
+                # Holding an id the owner never used costs nothing: the next ask creates under it.
                 self._unanswered_create = (params, request_id)
             raise
         self._unanswered_create = None
@@ -571,8 +572,7 @@ def _create_session(call, params, request_id):
     (``hermes_state_keys.local_identity``, applied by ``gateway.session_local.stage_local_session``),
     so a repeat resolves to the same session whether the first build has committed or is still in
     flight. A fresh id would build a second agent and orphan the first session. Any failure raises as
-    is; the retry runs inside the handler, so its failure carries the lost first ask as context
-    (:func:`_owner_may_hold`)."""
+    is."""
     try:
         return call("session.create", request_id=request_id, **params)
     except AnswerLost as exc:
@@ -589,16 +589,6 @@ def _verdict_on_the_id(exc):
     return isinstance(exc, GatewayRPCError) and (
         str(exc) in ("admission_conflict", "not_found")  # not_found: its session was deleted (a tombstone)
         or (str(exc) == "invalid_params" and exc.data.get("field") == "request_id"))
-
-
-def _owner_may_hold(exc):
-    """Whether the owner may hold a session under the request id a failed create used: an ask's
-    answer was lost, possibly the first one before a retry that failed; the ask ended in something
-    other than a classified gateway error (Ctrl+C, a raw transport error); or the owner failed it with
-    ``storage_unavailable``, which can follow the commit (``gateway/session_controls.py``)."""
-    return (isinstance(exc, AnswerLost) or isinstance(exc.__context__, AnswerLost)
-            or not isinstance(exc, GatewayClientError)
-            or (isinstance(exc, GatewayRPCError) and str(exc) == "storage_unavailable"))
 
 
 def session_store():

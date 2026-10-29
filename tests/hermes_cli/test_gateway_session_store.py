@@ -575,14 +575,18 @@ def test_a_storage_failure_of_a_fresh_create_holds_its_id(store):
     assert first == second
 
 
-def test_a_refused_fresh_create_holds_nothing(store):
+@pytest.mark.parametrize("failure", [GatewayRPCError("request_failed"), GatewayRPCError("invalid_params")],
+                         ids=["internal_error", "refused"])
+def test_a_failed_fresh_create_holds_its_id(store, failure):
+    """An internal error can follow the owner's commit (``-32603`` from a failure after it), and a
+    refusal costs nothing to ask again under the same id: the next create reuses it."""
     db, client = store
-    _failing_creates(client, GatewayRPCError("invalid_params"))
+    _failing_creates(client, failure)
     with pytest.raises(GatewayRPCError):
         db.create({})
     db.create({})
     first, second = (params["request_id"] for params in _creates(client))
-    assert first != second
+    assert first == second
 
 
 def test_an_interrupt_during_the_first_ask_keeps_the_request_id(store):
