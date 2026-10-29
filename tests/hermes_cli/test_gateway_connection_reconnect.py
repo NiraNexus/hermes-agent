@@ -13,7 +13,7 @@ import pytest
 
 from hermes_cli.cli_chat_error_copy import chat_error_response
 from hermes_cli.gateway_agent import GatewayAgent
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_cli.gateway_client import AnswerLost, GatewayClientError
 from hermes_cli.gateway_connection import GatewayConnection, lost_before
 
 SID = "local-abc"
@@ -251,6 +251,17 @@ def test_a_transient_resume_failure_fails_the_reconnect_and_the_next_call_retrie
     assert conn.call("status") == {"status": "ok", "life": 3}
     assert _resumes(gateway.lives[2]) == [SID]
     assert conn.state(SID).subscription_id == "sub-3"
+
+
+def test_a_resubscribe_answer_lost_during_a_redial_is_not_the_callers_lost_answer(gateway, conn):
+    """The redial's own ``session.resume`` lost its answer: the call that triggered the redial never
+    sent its request, so it must not read as :class:`AnswerLost` (a caller would re-ask under its id)."""
+    gateway.resume_errors.append(AnswerLost("Gateway did not answer session.resume"))
+    gateway.hang_up(conn)
+    with pytest.raises(GatewayClientError) as raised:
+        conn.call("status")
+    assert not isinstance(raised.value, AnswerLost)
+    assert conn.call("status") == {"status": "ok", "life": 3}
 
 
 def test_close_after_a_failed_resume_is_still_final(gateway, conn):

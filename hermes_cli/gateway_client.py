@@ -49,6 +49,11 @@ class GatewayClientError(ValueError):
     pass
 
 
+class AnswerLost(GatewayClientError):
+    """The request may have reached the owner, but its answer never came back: the deadline passed,
+    or the socket dropped after the send. A retry must reuse the request's own identity."""
+
+
 class GatewayRPCError(GatewayClientError):
     """A received owner refusal, distinct from an ambiguous transport failure.
 
@@ -196,7 +201,7 @@ class GatewayClient:
         except (ConnectionClosed, OSError, ValueError, TimeoutError):
             pass
         finally:
-            error = GatewayClientError("Gateway disconnected; turn outcome is unknown. "
+            error = AnswerLost("Gateway disconnected; turn outcome is unknown. "
                 "Resume the printed session ID to check whether it completed or was interrupted; do not resend the work.")
             for future in self.pending.values():
                 if not future.done():

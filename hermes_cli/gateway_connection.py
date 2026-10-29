@@ -16,7 +16,8 @@ import queue
 import threading
 import time
 
-from hermes_cli.gateway_client import DEFAULT_RPC_TIMEOUT, RESUME_KEY_MISMATCH, GatewayClientError, GatewayRPCError
+from hermes_cli.gateway_client import (DEFAULT_RPC_TIMEOUT, RESUME_KEY_MISMATCH, AnswerLost, GatewayClientError,
+                                       GatewayRPCError)
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +282,8 @@ class GatewayConnection:
                 stop.cancel()
         except Exception as exc:  # health: allow BLE001 -- a transport failure becomes the connect error or the disconnect frame
             if not self._ready.is_set():
+                if isinstance(exc, AnswerLost):  # a resubscribe's lost answer: no caller's request was sent
+                    exc = GatewayClientError(str(exc))
                 self._error = exc if isinstance(exc, GatewayClientError) else GatewayClientError(
                     f"Gateway connection failed; no local fallback ({type(exc).__name__})")
             else:
@@ -497,4 +500,4 @@ class GatewayConnection:
             return future.result(max(deadline - time.monotonic(), 0)), epoch
         except TimeoutError as exc:
             future.cancel()
-            raise GatewayClientError(f"Gateway did not answer {method}") from exc
+            raise AnswerLost(f"Gateway did not answer {method}") from exc

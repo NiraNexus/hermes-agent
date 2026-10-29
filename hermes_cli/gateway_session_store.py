@@ -22,8 +22,8 @@ import re
 import sys
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_connection import DISCONNECTED, RESUME_REFUSALS, GatewayConnection
+from hermes_cli.gateway_client import AnswerLost, GatewayClientError
+from hermes_cli.gateway_connection import RESUME_REFUSALS, GatewayConnection
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,9 @@ class GatewaySessionStore:
         self.current: dict | None = None
         self._reader = None
         self._create_parameters = None
+        # (params, request_id) of a create whose answers were both lost: the owner may still have
+        # created it, so the next create of the same request asks under that id again.
+        self._unanswered_create = None
 
     def __bool__(self):
         return not self.connection.final
@@ -174,7 +177,14 @@ class GatewaySessionStore:
         if title:
             params["title"] = title
         params.update(self.client_env())
-        snapshot = _create_session(self.call, params)
+        held = self._unanswered_create
+        request_id = held[1] if held and held[0] == params else uuid.uuid4().hex
+        self._unanswered_create = None
+        try:
+            snapshot = _create_session(self.call, params, request_id)
+        except AnswerLost:
+            self._unanswered_create = (params, request_id)
+            raise
         warning = (snapshot.get("info") or {}).get("config_warning")
         if warning:
             print(f"Warning: {warning}", file=sys.stderr)
@@ -548,18 +558,16 @@ def move_cli_workspace(cli, wt_info):
     os.environ["TERMINAL_CWD"] = cwd
 
 
-def _create_session(call, params):
-    """``session.create`` with one ``request_id`` for every ask. The owner derives the session id
-    from it (``gateway.session_local.local_identity``) and answers a repeat with the session it
-    already built or is still building, so an answer lost after the send (the deadline passed, or
-    the socket dropped) is asked once more under the same id. Asking under a fresh id would build a
-    second agent and orphan the first session. A refusal, or a request that never left, raises as is."""
-    request_id = uuid.uuid4().hex
+def _create_session(call, params, request_id):
+    """``session.create`` asked again once, under the same ``request_id``, when its answer was lost
+    (:class:`AnswerLost`). The owner derives the session id from the request id
+    (``hermes_state_keys.local_identity``, applied by ``gateway.session_local.stage_local_session``),
+    so a repeat resolves to the same session whether the first build has committed or is still in
+    flight. A fresh id would build a second agent and orphan the first session. A refusal, or a
+    request that never left, raises as is."""
     try:
         return call("session.create", request_id=request_id, **params)
-    except GatewayClientError as exc:
-        if str(exc) != DISCONNECTED and not isinstance(exc.__cause__, TimeoutError):
-            raise
+    except AnswerLost as exc:
         logger.info("session.create answer lost (%s); asking again under the same request_id", exc)
     return call("session.create", request_id=request_id, **params)
 
@@ -581,7 +589,7 @@ def create_titled_session(title):
     try:
         store = session_store()
         params.update(store.client_env())
-        snapshot = _create_session(store.call, {**params, "title": title})
+        snapshot = _create_session(store.call, {**params, "title": title}, uuid.uuid4().hex)
     except GatewayClientError as exc:
         logger.warning("Failed to create titled session %r on the gateway: %s", title, exc)
         return None

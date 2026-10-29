@@ -73,3 +73,19 @@ async def test_compress_waits_past_the_default_rpc_budget(monkeypatch):
     assert result == {'status': 'applied'}
     # The budget is a client-side knob, never a wire parameter the closed contract would refuse.
     assert all('_timeout' not in req['params'] for req in sent)
+
+
+@pytest.mark.asyncio
+async def test_an_answer_cut_off_by_a_hang_up_is_answer_lost():
+    """The socket drops after the send: the request may have reached the owner, so a caller that
+    retries must reuse its identity (``AnswerLost``), unlike a request that never left."""
+    from hermes_cli.gateway_client import AnswerLost
+
+    class _HangsUp(_Socket):
+        async def __anext__(self):
+            await self.inbox.get()  # the request was sent; the socket then closes without answering
+            raise StopAsyncIteration
+
+    async with GatewayClient(_HangsUp(lambda req: {'sent': True})) as client:
+        with pytest.raises(AnswerLost, match='turn outcome is unknown'):
+            await client.rpc('session.create', request_id='r')
