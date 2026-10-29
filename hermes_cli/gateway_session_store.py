@@ -583,10 +583,11 @@ def _create_session(call, params, request_id):
 def _verdict_on_the_id(exc):
     """The owner looked the request id up and refused it: the session under it carries another
     frozen request (``invalid_params`` naming ``request_id``) or another launch key
-    (``admission_conflict``), in ``gateway.session_local.stage_local_session``. A refusal from before
+    (``admission_conflict``), in ``gateway.session_local.stage_local_session``; or the session under
+    it was deleted (``not_found`` from its tombstone, ``hermes_state_local``). A refusal from before
     that lookup (``invalid_params`` for an unavailable ``cwd``, ``runtime_draining``) is not one."""
     return isinstance(exc, GatewayRPCError) and (
-        str(exc) == "admission_conflict"
+        str(exc) in ("admission_conflict", "not_found")  # not_found: its session was deleted (a tombstone)
         or (str(exc) == "invalid_params" and exc.data.get("field") == "request_id"))
 
 

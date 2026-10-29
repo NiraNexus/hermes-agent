@@ -521,8 +521,9 @@ def test_only_an_answer_settles_a_held_request_id(store, later):
 _ID_MISMATCH = GatewayRPCError("invalid_params", data={"field": "request_id"})
 
 
-@pytest.mark.parametrize("verdict", [_ID_MISMATCH, GatewayRPCError("admission_conflict")],
-                         ids=["another_request", "another_key"])
+@pytest.mark.parametrize("verdict", [_ID_MISMATCH, GatewayRPCError("admission_conflict"),
+                                     GatewayRPCError("not_found")],
+                         ids=["another_request", "another_key", "deleted"])
 def test_the_owners_verdict_on_a_held_request_id_releases_it(store, verdict):
     """The owner looked the id up and refused it (another frozen request, another launch key):
     every ask under it would be refused the same way, so the next create mints a new one."""
